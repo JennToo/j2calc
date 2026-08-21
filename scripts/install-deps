@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -eux -o pipefail
+
+sudo apt-get install -y rustup cmake build-essential libudev-dev
+rustup default stable
+rustup component add rust-src rust-analyzer
+rustup target add thumbv8m.main-none-eabihf
+rustup update
+
+if ! command -v probe-rs
+then
+    cargo install probe-rs-tools --locked
+fi
