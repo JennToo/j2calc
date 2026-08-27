@@ -34,9 +34,15 @@ embedded-hal-async = "1.0"
 embedded-hal-bus = { version = "0.1", features = ["async"] }
 embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }
+embedded-graphics = "0.8.2"
+embedded-graphics-core = "0.4.1"
 
 [profile.release]
 debug = true
+
+[features]
+default = ["defmt"]
+defmt = []
 
 [package.metadata.embassy]
 build = [
