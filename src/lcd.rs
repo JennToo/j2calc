@@ -28,7 +28,7 @@ pub struct Lcd<SPI: SpiBus<u8>, CS: OutputPin> {
     spi: SPI,
     cs: CS,
     vcom: bool,
-    framebuffer: [[u8; WIDTH]; HEIGHT],
+    framebuffer: [[u8; WIDTH / 8]; HEIGHT],
 }
 
 impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
@@ -37,7 +37,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
             spi,
             cs,
             vcom: false,
-            framebuffer: [[0; WIDTH]; HEIGHT],
+            framebuffer: [[0xFF; WIDTH / 8]; HEIGHT],
         }
     }
 
@@ -76,7 +76,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
                 .write(&self.framebuffer[line])
                 .await
                 .map_err(|_| Error::Spi)?;
-            let cmd = [0u8, (line + 1) as u8];
+            let cmd = [0u8, ((line + 1) as u8).reverse_bits()];
             self.spi.write(&cmd).await.map_err(|_| Error::Spi)?;
         }
 
@@ -90,13 +90,13 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         if self.vcom { VCOM_BIT } else { 0u8 }
     }
 
-    fn set_pixel(&mut self, x: i32, y: i32, color: BinaryColor) {
+    pub fn set_pixel(&mut self, x: i32, y: i32, color: BinaryColor) {
         if x >= WIDTH as i32 || y >= HEIGHT as i32 || x < 0 || y < 0 {
             return;
         }
 
-        let bit: u8 = 1u8 << (x % 8);
-        let value = if color == BinaryColor::Off { 0u8 } else { bit };
+        let bit: u8 = 1u8 << (7 - (x % 8));
+        let value = if color == BinaryColor::Off { bit } else { 0u8 };
         let mask = !bit;
         let cell = &mut self.framebuffer[y as usize][x as usize / 8];
         *cell = (*cell & mask) | value;
@@ -137,5 +137,6 @@ pub fn draw_splash<D: DrawTarget<Color = BinaryColor>>(display: &mut D) -> Resul
         Alignment::Center,
     )
     .draw(display)?;
+
     Ok(())
 }
