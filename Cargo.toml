@@ -36,6 +36,7 @@ embedded-io-async = { version = "0.7.0", features = ["defmt"] }
 portable-atomic = { version = "1.15", features = ["critical-section"] }
 embedded-graphics = "0.8.2"
 embedded-graphics-core = "0.4.1"
+textwrap-macros = { version = "0.3.0", default-features = false }
 
 [profile.release]
 debug = true
