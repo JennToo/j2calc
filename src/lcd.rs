@@ -2,7 +2,6 @@ use embassy_time::Timer;
 use embedded_graphics::{
     Drawable, Pixel,
     geometry::{Dimensions, Point, Size},
-    image::{Image, ImageRaw},
     mono_font::{MonoTextStyle, ascii::FONT_10X20},
     pixelcolor::BinaryColor,
     primitives::Rectangle,
@@ -95,7 +94,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
 }
 
 pub struct BinaryFramebuffer {
-    data: [[u8; WIDTH / 8]; HEIGHT]
+    data: [[u8; WIDTH / 8]; HEIGHT],
 }
 
 impl BinaryFramebuffer {
@@ -148,43 +147,16 @@ impl DrawTarget for BinaryFramebuffer {
     }
 }
 
-
-const INTRO: &[&str] = textwrap_macros::wrap!(
-    "Did you ever hear the tragedy of Darth Plagueis the Wise? I thought not. It's not a story the Jedi would tell you. It's a Sith legend. Darth Plagueis was a Dark Lord of the Sith, so powerful and so wise he could use the Force to influence the midichlorians to create life... He had such a knowledge of the dark side that he could even keep the ones he cared about from dying. The dark side of the Force is a pathway to many abilities some consider to be unnatural. He became so powerful... the only thing he was afraid of was losing his power, which eventually, of course, he did. Unfortunately, he taught his apprentice everything he knew, then his apprentice killed him in his sleep. It's ironic he could save others from death, but not himself.",
-    40
-);
-const IMAGE_DATA: &[u8] = include_bytes!("../Darth.bin");
-pub fn draw_splash<D: DrawTarget<Color = BinaryColor>>(
-    display: &mut D,
-    y_offset: i32,
-) -> Result<(), D::Error> {
+pub fn draw_splash<D: DrawTarget<Color = BinaryColor>>(display: &mut D) -> Result<(), D::Error> {
     display.clear(BinaryColor::Off)?;
-
-    let raw_image = ImageRaw::<BinaryColor>::new(IMAGE_DATA, 400);
-
-    let image = Image::new(&raw_image, Point::new(0, y_offset));
-    image.draw(display)?;
-
     let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-    // Text::with_alignment(
-    //     "j2calc",
-    //     Point::new((WIDTH / 2) as i32, y_offset),
-    //     character_style,
-    //     Alignment::Center,
-    // )
-    // .draw(display)?;
-
-    let mut line_y = y_offset + 240;
-    for line in INTRO {
-        Text::with_alignment(
-            line,
-            Point::new(0, line_y),
-            character_style,
-            Alignment::Left,
-        )
-        .draw(display)?;
-        line_y += 20;
-    }
+    Text::with_alignment(
+        "j2calc",
+        Point::new((WIDTH / 2) as i32, 120),
+        character_style,
+        Alignment::Center,
+    )
+    .draw(display)?;
 
     Ok(())
 }
