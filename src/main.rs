@@ -16,11 +16,12 @@ use static_cell::StaticCell;
 
 mod lcd;
 
-const DISPLAY_REFRESH_PERIOD: Duration = Duration::from_hz(10);
+const DISPLAY_REFRESH_PERIOD: Duration = Duration::from_hz(20);
 
 type Display = lcd::Lcd<Spi<'static, peripherals::SPI0, embassy_rp::spi::Async>, Output<'static>>;
-type DisplayMutex = Mutex<NoopRawMutex, Display>;
-static DISPLAY_MEMORY: StaticCell<DisplayMutex> = StaticCell::new();
+static DISPLAY_MEMORY: StaticCell<Display> = StaticCell::new();
+type FramebufferMutex = Mutex<NoopRawMutex, lcd::BinaryFramebuffer>;
+static FB_MEMORY: StaticCell<FramebufferMutex> = StaticCell::new();
 
 // Program metadata for `picotool info`.
 #[unsafe(link_section = ".bi_entries")]
@@ -36,18 +37,6 @@ bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<peripherals::DMA_CH0>;
 });
 
-async fn measure_duration(name: &str, f: impl AsyncFnOnce() -> ()) {
-    let start = embassy_time::Instant::now();
-    f().await;
-    let end = embassy_time::Instant::now();
-
-    info!(
-        "{} took {} microseconds",
-        name,
-        end.duration_since(start).as_micros()
-    );
-}
-
 #[embassy_executor::main(
     executor = "embassy_rp::executor::Executor",
     entry = "cortex_m_rt::entry"
@@ -61,12 +50,13 @@ async fn main(spawner: Spawner) {
     lcd_spi_config.phase = Phase::CaptureOnSecondTransition;
     lcd_spi_config.polarity = Polarity::IdleLow;
     let lcd_spi = Spi::new_txonly(p.SPI0, p.PIN_22, p.PIN_23, p.DMA_CH0, Irqs, lcd_spi_config);
-    let display = DISPLAY_MEMORY.init(Mutex::new(lcd::Lcd::new(
+    let lcd = DISPLAY_MEMORY.init(lcd::Lcd::new(
         lcd_spi,
         Output::new(p.PIN_25, Level::Low),
-    )));
+    ));
+    let fb = FB_MEMORY.init(Mutex::new(lcd::BinaryFramebuffer::new()));
 
-    spawner.spawn(display_update(display).unwrap());
+    spawner.spawn(display_update(lcd, fb).unwrap());
 
     let mut y_offset = 240;
 
@@ -79,8 +69,8 @@ async fn main(spawner: Spawner) {
             y_offset = 0;
         }
         {
-            let mut lcd = display.lock().await;
-            lcd::draw_splash(&mut *lcd, y_offset).unwrap();
+            let mut fb = fb.lock().await;
+            lcd::draw_splash(&mut *fb, y_offset).unwrap();
         }
 
         Timer::at(end_of_frame).await;
@@ -88,11 +78,10 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn display_update(display: &'static DisplayMutex) {
+async fn display_update(display: &'static mut Display, framebuffer: &'static FramebufferMutex) {
     {
-        let mut lcd = display.lock().await;
-        lcd.clear_screen().await.unwrap();
-        lcd.flush().await.unwrap();
+        let fb = framebuffer.lock().await;
+        display.draw_framebuffer(&fb).await.unwrap();
     }
 
     loop {
@@ -100,8 +89,8 @@ async fn display_update(display: &'static DisplayMutex) {
         let end_of_frame = now + DISPLAY_REFRESH_PERIOD;
 
         {
-            let mut lcd = display.lock().await;
-            lcd.flush().await.unwrap();
+            let fb = framebuffer.lock().await;
+            display.draw_framebuffer(&fb).await.unwrap();
         }
 
         let now = Instant::now();

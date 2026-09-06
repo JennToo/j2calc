@@ -30,7 +30,6 @@ pub struct Lcd<SPI: SpiBus<u8>, CS: OutputPin> {
     spi: SPI,
     cs: CS,
     vcom: bool,
-    framebuffer: [[u8; WIDTH / 8]; HEIGHT],
 }
 
 impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
@@ -39,7 +38,6 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
             spi,
             cs,
             vcom: false,
-            framebuffer: [[0xFF; WIDTH / 8]; HEIGHT],
         }
     }
 
@@ -68,7 +66,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         Ok(())
     }
 
-    pub async fn flush(&mut self) -> Result<(), Error> {
+    pub async fn draw_framebuffer(&mut self, framebuffer: &BinaryFramebuffer) -> Result<(), Error> {
         self.cs.set_high().map_err(|_| Error::Gpio)?;
         Timer::after_micros(1).await;
 
@@ -78,7 +76,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
 
         for line in 0..HEIGHT {
             self.spi
-                .write(&self.framebuffer[line])
+                .write(&framebuffer.data[line])
                 .await
                 .map_err(|_| Error::Spi)?;
             let cmd = [0u8, ((line + 1) as u8).reverse_bits()];
@@ -94,6 +92,18 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         self.vcom = !self.vcom;
         if self.vcom { VCOM_BIT } else { 0u8 }
     }
+}
+
+pub struct BinaryFramebuffer {
+    data: [[u8; WIDTH / 8]; HEIGHT]
+}
+
+impl BinaryFramebuffer {
+    pub fn new() -> Self {
+        Self {
+            data: [[0xFF; WIDTH / 8]; HEIGHT],
+        }
+    }
 
     pub fn set_pixel(&mut self, x: i32, y: i32, color: BinaryColor) {
         if x >= WIDTH as i32 || y >= HEIGHT as i32 || x < 0 || y < 0 {
@@ -103,12 +113,12 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         let bit: u8 = 1u8 << (7 - (x % 8));
         let value = if color == BinaryColor::Off { bit } else { 0u8 };
         let mask = !bit;
-        let cell = &mut self.framebuffer[y as usize][x as usize / 8];
+        let cell = &mut self.data[y as usize][x as usize / 8];
         *cell = (*cell & mask) | value;
     }
 }
 
-impl<SPI: SpiBus<u8>, CS: OutputPin> Dimensions for Lcd<SPI, CS> {
+impl Dimensions for BinaryFramebuffer {
     fn bounding_box(&self) -> Rectangle {
         Rectangle {
             top_left: Point::zero(),
@@ -117,7 +127,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Dimensions for Lcd<SPI, CS> {
     }
 }
 
-impl<SPI: SpiBus<u8>, CS: OutputPin> DrawTarget for Lcd<SPI, CS> {
+impl DrawTarget for BinaryFramebuffer {
     type Color = BinaryColor;
     type Error = core::convert::Infallible;
 
@@ -133,10 +143,11 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> DrawTarget for Lcd<SPI, CS> {
 
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         let value = if color == BinaryColor::Off { 0xFF } else { 0 };
-        self.framebuffer = [[value; WIDTH / 8]; HEIGHT];
+        self.data = [[value; WIDTH / 8]; HEIGHT];
         Ok(())
     }
 }
+
 
 const INTRO: &[&str] = textwrap_macros::wrap!(
     "Did you ever hear the tragedy of Darth Plagueis the Wise? I thought not. It's not a story the Jedi would tell you. It's a Sith legend. Darth Plagueis was a Dark Lord of the Sith, so powerful and so wise he could use the Force to influence the midichlorians to create life... He had such a knowledge of the dark side that he could even keep the ones he cared about from dying. The dark side of the Force is a pathway to many abilities some consider to be unnatural. He became so powerful... the only thing he was afraid of was losing his power, which eventually, of course, he did. Unfortunately, he taught his apprentice everything he knew, then his apprentice killed him in his sleep. It's ironic he could save others from death, but not himself.",
