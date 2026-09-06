@@ -8,13 +8,19 @@ use embassy_rp::{
     bind_interrupts, gpio, peripherals,
     spi::{Config, Phase, Polarity, Spi},
 };
+use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex};
 use embassy_time::{Duration, Instant, Timer};
 use gpio::{Level, Output};
 use panic_probe as _;
+use static_cell::StaticCell;
 
 mod lcd;
 
-const DISPLAY_REFRESH_PERIOD: Duration = Duration::from_hz(8);
+const DISPLAY_REFRESH_PERIOD: Duration = Duration::from_hz(10);
+
+type Display = lcd::Lcd<Spi<'static, peripherals::SPI0, embassy_rp::spi::Async>, Output<'static>>;
+type DisplayMutex = Mutex<NoopRawMutex, Display>;
+static DISPLAY_MEMORY: StaticCell<DisplayMutex> = StaticCell::new();
 
 // Program metadata for `picotool info`.
 #[unsafe(link_section = ".bi_entries")]
@@ -35,14 +41,18 @@ async fn measure_duration(name: &str, f: impl AsyncFnOnce() -> ()) {
     f().await;
     let end = embassy_time::Instant::now();
 
-    info!("{} took {} microseconds", name, end.duration_since(start).as_micros());
+    info!(
+        "{} took {} microseconds",
+        name,
+        end.duration_since(start).as_micros()
+    );
 }
 
 #[embassy_executor::main(
     executor = "embassy_rp::executor::Executor",
     entry = "cortex_m_rt::entry"
 )]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let mut led = Output::new(p.PIN_7, Level::Low);
 
@@ -51,35 +61,26 @@ async fn main(_spawner: Spawner) {
     lcd_spi_config.phase = Phase::CaptureOnSecondTransition;
     lcd_spi_config.polarity = Polarity::IdleLow;
     let lcd_spi = Spi::new_txonly(p.SPI0, p.PIN_22, p.PIN_23, p.DMA_CH0, Irqs, lcd_spi_config);
-    let mut lcd = lcd::Lcd::new(lcd_spi, Output::new(p.PIN_25, Level::Low));
+    let display = DISPLAY_MEMORY.init(Mutex::new(lcd::Lcd::new(
+        lcd_spi,
+        Output::new(p.PIN_25, Level::Low),
+    )));
 
-    lcd.clear_screen().await.unwrap();
-    lcd.flush().await.unwrap();
+    spawner.spawn(display_update(display).unwrap());
 
     let mut y_offset = 240;
-    let mut next_led_toggle = Instant::now();
 
     loop {
         let now = Instant::now();
         let end_of_frame = now + DISPLAY_REFRESH_PERIOD;
 
-        if now > next_led_toggle {
-            led.set_low();
-        }
-
-        y_offset -= 2;
+        y_offset -= 1;
         if y_offset < -240 * 6 {
             y_offset = 0;
         }
-        lcd::draw_splash(&mut lcd, y_offset).unwrap();
-
-        lcd.flush().await.unwrap();
-
-        let now = Instant::now();
-        if now > end_of_frame {
-            warn!("Missed timing by {} us", (now - end_of_frame).as_micros());
-            led.set_high();
-            next_led_toggle = now + Duration::from_secs(1);
+        {
+            let mut lcd = display.lock().await;
+            lcd::draw_splash(&mut *lcd, y_offset).unwrap();
         }
 
         Timer::at(end_of_frame).await;
@@ -87,6 +88,30 @@ async fn main(_spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn screen_updater() {
-    
+async fn display_update(display: &'static DisplayMutex) {
+    {
+        let mut lcd = display.lock().await;
+        lcd.clear_screen().await.unwrap();
+        lcd.flush().await.unwrap();
+    }
+
+    loop {
+        let now = Instant::now();
+        let end_of_frame = now + DISPLAY_REFRESH_PERIOD;
+
+        {
+            let mut lcd = display.lock().await;
+            lcd.flush().await.unwrap();
+        }
+
+        let now = Instant::now();
+        if now > end_of_frame {
+            warn!(
+                "Display update missed timing by {} us",
+                (now - end_of_frame).as_micros()
+            );
+        }
+
+        Timer::at(end_of_frame).await;
+    }
 }
