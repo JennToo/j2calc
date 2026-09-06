@@ -1,7 +1,8 @@
+use embassy_time::Timer;
 use embedded_graphics::{
     Drawable, Pixel,
     geometry::{Dimensions, Point, Size},
-    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    mono_font::{MonoTextStyle, ascii::FONT_10X20},
     pixelcolor::BinaryColor,
     primitives::Rectangle,
     text::{Alignment, Text},
@@ -28,7 +29,6 @@ pub struct Lcd<SPI: SpiBus<u8>, CS: OutputPin> {
     spi: SPI,
     cs: CS,
     vcom: bool,
-    framebuffer: [[u8; WIDTH / 8]; HEIGHT],
 }
 
 impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
@@ -37,12 +37,12 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
             spi,
             cs,
             vcom: false,
-            framebuffer: [[0xFF; WIDTH / 8]; HEIGHT],
         }
     }
 
     pub async fn update_vcom(&mut self) -> Result<(), Error> {
         self.cs.set_high().map_err(|_| Error::Gpio)?;
+        Timer::after_micros(1).await;
 
         let cmd = [self.toggle_vcom(), 0u8];
         self.spi.write(&cmd).await.map_err(|_| Error::Spi)?;
@@ -55,6 +55,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
 
     pub async fn clear_screen(&mut self) -> Result<(), Error> {
         self.cs.set_high().map_err(|_| Error::Gpio)?;
+        Timer::after_micros(1).await;
 
         let cmd = [self.toggle_vcom() | CLEAR_BIT, 0u8];
         self.spi.write(&cmd).await.map_err(|_| Error::Spi)?;
@@ -64,8 +65,9 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         Ok(())
     }
 
-    pub async fn flush(&mut self) -> Result<(), Error> {
+    pub async fn draw_framebuffer(&mut self, framebuffer: &BinaryFramebuffer) -> Result<(), Error> {
         self.cs.set_high().map_err(|_| Error::Gpio)?;
+        Timer::after_micros(1).await;
 
         // TODO: Be smarter and only update lines that changed, could save power
         let cmd = [self.toggle_vcom() | WRITE_BIT, 0u8];
@@ -73,7 +75,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
 
         for line in 0..HEIGHT {
             self.spi
-                .write(&self.framebuffer[line])
+                .write(&framebuffer.data[line])
                 .await
                 .map_err(|_| Error::Spi)?;
             let cmd = [0u8, ((line + 1) as u8).reverse_bits()];
@@ -89,6 +91,18 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         self.vcom = !self.vcom;
         if self.vcom { VCOM_BIT } else { 0u8 }
     }
+}
+
+pub struct BinaryFramebuffer {
+    data: [[u8; WIDTH / 8]; HEIGHT],
+}
+
+impl BinaryFramebuffer {
+    pub fn new() -> Self {
+        Self {
+            data: [[0xFF; WIDTH / 8]; HEIGHT],
+        }
+    }
 
     pub fn set_pixel(&mut self, x: i32, y: i32, color: BinaryColor) {
         if x >= WIDTH as i32 || y >= HEIGHT as i32 || x < 0 || y < 0 {
@@ -98,12 +112,12 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
         let bit: u8 = 1u8 << (7 - (x % 8));
         let value = if color == BinaryColor::Off { bit } else { 0u8 };
         let mask = !bit;
-        let cell = &mut self.framebuffer[y as usize][x as usize / 8];
+        let cell = &mut self.data[y as usize][x as usize / 8];
         *cell = (*cell & mask) | value;
     }
 }
 
-impl<SPI: SpiBus<u8>, CS: OutputPin> Dimensions for Lcd<SPI, CS> {
+impl Dimensions for BinaryFramebuffer {
     fn bounding_box(&self) -> Rectangle {
         Rectangle {
             top_left: Point::zero(),
@@ -112,7 +126,7 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Dimensions for Lcd<SPI, CS> {
     }
 }
 
-impl<SPI: SpiBus<u8>, CS: OutputPin> DrawTarget for Lcd<SPI, CS> {
+impl DrawTarget for BinaryFramebuffer {
     type Color = BinaryColor;
     type Error = core::convert::Infallible;
 
@@ -125,14 +139,20 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> DrawTarget for Lcd<SPI, CS> {
             .for_each(|p| self.set_pixel(p.0.x, p.0.y, p.1));
         Ok(())
     }
+
+    fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+        let value = if color == BinaryColor::Off { 0xFF } else { 0 };
+        self.data = [[value; WIDTH / 8]; HEIGHT];
+        Ok(())
+    }
 }
 
 pub fn draw_splash<D: DrawTarget<Color = BinaryColor>>(display: &mut D) -> Result<(), D::Error> {
     display.clear(BinaryColor::Off)?;
-    let character_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
     Text::with_alignment(
         "j2calc",
-        display.bounding_box().center(),
+        Point::new((WIDTH / 2) as i32, 120),
         character_style,
         Alignment::Center,
     )
