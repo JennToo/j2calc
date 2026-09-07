@@ -1,3 +1,5 @@
+use core::fmt;
+
 use embassy_time::Timer;
 use embedded_graphics::{
     Drawable, Pixel,
@@ -5,7 +7,7 @@ use embedded_graphics::{
     mono_font::{MonoTextStyle, ascii::FONT_10X20},
     pixelcolor::BinaryColor,
     primitives::Rectangle,
-    text::{Alignment, Text},
+    text::Text,
 };
 use embedded_graphics_core::draw_target::DrawTarget;
 use embedded_hal_1::digital::OutputPin;
@@ -95,12 +97,14 @@ impl<SPI: SpiBus<u8>, CS: OutputPin> Lcd<SPI, CS> {
 
 pub struct BinaryFramebuffer {
     data: [[u8; WIDTH / 8]; HEIGHT],
+    text_cursor: Point,
 }
 
 impl BinaryFramebuffer {
     pub fn new() -> Self {
         Self {
             data: [[0xFF; WIDTH / 8]; HEIGHT],
+            text_cursor: Point::new(0, 120),
         }
     }
 
@@ -143,20 +147,66 @@ impl DrawTarget for BinaryFramebuffer {
     fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
         let value = if color == BinaryColor::Off { 0xFF } else { 0 };
         self.data = [[value; WIDTH / 8]; HEIGHT];
+        self.text_cursor = Point::new(0, 120);
         Ok(())
     }
 }
 
-pub fn draw_splash<D: DrawTarget<Color = BinaryColor>>(display: &mut D) -> Result<(), D::Error> {
-    display.clear(BinaryColor::Off)?;
-    let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-    Text::with_alignment(
-        "j2calc",
-        Point::new((WIDTH / 2) as i32, 120),
-        character_style,
-        Alignment::Center,
-    )
-    .draw(display)?;
+const TEXT_WIDTH: usize = WIDTH / 10;
+const TEXT_HEIGHT: usize = HEIGHT / 20;
+pub struct TextFramebuffer {
+    data: [[char; TEXT_WIDTH]; TEXT_HEIGHT],
+    cursor: (usize, usize),
+}
 
-    Ok(())
+impl TextFramebuffer {
+    pub fn new() -> Self {
+        Self {
+            data: [[' '; TEXT_WIDTH]; TEXT_HEIGHT],
+            cursor: (0, 0),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.data = [[' '; TEXT_WIDTH]; TEXT_HEIGHT];
+        self.cursor = (0, 0);
+    }
+
+    pub fn draw<D: DrawTarget<Color = BinaryColor>>(&self, target: &mut D) -> Result<(), D::Error> {
+        let character_style = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+        let mut cursor = Point::new(0, 20);
+        for line in 0..TEXT_HEIGHT {
+            for col in 0..TEXT_WIDTH {
+                let mut mem = [0; 4];
+                let s = self.data[line][col].encode_utf8(&mut mem);
+                Text::new(s, cursor, character_style).draw(target)?;
+                cursor.x += 10;
+            }
+            cursor.x = 0;
+            cursor.y += 20;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Write for TextFramebuffer {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for char in s.chars() {
+            if char == '\n' {
+                self.cursor.1 += 1;
+            } else {
+                if self.cursor.0 < TEXT_WIDTH && self.cursor.1 < TEXT_HEIGHT {
+                    self.data[self.cursor.1][self.cursor.0] = char;
+                }
+
+                if self.cursor.0 + 1 >= TEXT_WIDTH {
+                    self.cursor.0 = 0;
+                    self.cursor.1 += 1;
+                } else {
+                    self.cursor.0 += 1;
+                }
+            }
+        }
+        Ok(())
+    }
 }

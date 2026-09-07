@@ -1,20 +1,25 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
+use defmt::info;
 use defmt_rtt as _;
+use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::Spawner;
-use embassy_futures::join;
+use embassy_futures::select::{Either, select};
 use embassy_rp::{
     bind_interrupts,
-    gpio::{Level, Output},
+    gpio::{Input, Level, Output, Pull},
     peripherals,
     spi::{Config, Phase, Polarity, Spi},
 };
 use embassy_sync::{blocking_mutex::raw::NoopRawMutex, mutex::Mutex, signal::Signal};
 use embassy_time::{Duration, Timer};
+use embedded_graphics::{draw_target::DrawTarget, pixelcolor::BinaryColor};
 use panic_probe as _;
 use static_cell::StaticCell;
 
+mod keypad;
 mod lcd;
 
 const VCOM_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -36,7 +41,9 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 ];
 
 bind_interrupts!(struct Irqs {
-    DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<peripherals::DMA_CH0>;
+    DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<peripherals::DMA_CH0>,
+                 embassy_rp::dma::InterruptHandler<peripherals::DMA_CH1>,
+                 embassy_rp::dma::InterruptHandler<peripherals::DMA_CH2>;
 });
 
 #[embassy_executor::main(
@@ -56,11 +63,56 @@ async fn main(spawner: Spawner) {
     let fb = FB_MEMORY.init(Mutex::new(lcd::BinaryFramebuffer::new()));
     let redraw = REDRAW_MEMORY.init(Signal::new());
 
+    let mut keypad_spi_config = Config::default();
+    keypad_spi_config.frequency = 1_000_000; // Can go as high as 10 MHz
+    keypad_spi_config.phase = Phase::CaptureOnSecondTransition;
+    keypad_spi_config.polarity = Polarity::IdleLow;
+    let keypad_spi_bus: Mutex<NoopRawMutex, _> = Mutex::new(Spi::new(
+        p.SPI1,
+        p.PIN_10,
+        p.PIN_11,
+        p.PIN_24,
+        p.DMA_CH1,
+        p.DMA_CH2,
+        Irqs,
+        keypad_spi_config,
+    ));
+    let keypad_spi_device = SpiDevice::new(&keypad_spi_bus, Output::new(p.PIN_5, Level::High));
+    let mut keypad = keypad::KeypadIo::new(keypad_spi_device, Input::new(p.PIN_6, Pull::Down));
+
+    let mut text_fb = lcd::TextFramebuffer::new();
+
     spawner.spawn(display_update(lcd, fb, redraw).unwrap());
 
-    let mut fb = fb.lock().await;
-    lcd::draw_splash(&mut *fb);
+    {
+        let mut fb = fb.lock().await;
+        fb.clear(BinaryColor::Off).unwrap();
+    }
     redraw.signal(());
+
+    keypad.setup().await.unwrap();
+    loop {
+        Timer::after_millis(10).await; // Debounce
+        let val = keypad.poll_all().await.unwrap();
+        info!("Button Mask {:049b}", val);
+        Timer::after(Duration::from_millis(1)).await;
+
+        text_fb.clear();
+        write!(text_fb, "Buttons {:049b}", val).unwrap();
+        {
+            let mut fb = fb.lock().await;
+            fb.clear(BinaryColor::Off).unwrap();
+            text_fb.draw(&mut *fb);
+        }
+        redraw.signal(());
+
+        if val == 0 {
+            led.set_low();
+            keypad.wait_for_int().await.unwrap();
+        } else {
+            led.set_high();
+        }
+    }
 }
 
 #[embassy_executor::task]
@@ -72,15 +124,17 @@ async fn display_update(
     display.clear_screen().await.unwrap();
 
     loop {
-        if redraw.signaled() {
-            let fb = framebuffer.lock().await;
-            display.draw_framebuffer(&fb).await.unwrap();
-            redraw.reset();
-        } else {
-            display.update_vcom().await.unwrap();
-        }
-
         let timer = Timer::after(VCOM_REFRESH_INTERVAL);
-        join::join(timer, redraw.wait()).await;
+
+        match select(redraw.wait(), timer).await {
+            Either::First(_) => {
+                redraw.reset();
+                let fb = framebuffer.lock().await;
+                display.draw_framebuffer(&fb).await.unwrap();
+            }
+            Either::Second(_) => {
+                display.update_vcom().await.unwrap();
+            }
+        }
     }
 }
