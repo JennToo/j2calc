@@ -12,3 +12,8 @@ if ! command -v probe-rs
 then
     cargo install probe-rs-tools --locked
 fi
+
+if ! command -v elf2uf2-rs
+then
+    cargo install --git https://github.com/JoNil/elf2uf2-rs.git
+fi

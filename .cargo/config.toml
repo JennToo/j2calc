@@ -1,5 +1,6 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip RP235x"
+# runner = "probe-rs run --chip RP235x"
+runner = "elf2uf2-rs deploy -f rp2350-arm-s"
 
 [build]
 target = "thumbv8m.main-none-eabihf"

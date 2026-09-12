@@ -37,6 +37,7 @@ portable-atomic = { version = "1.15", features = ["critical-section"] }
 embedded-graphics = "0.8.2"
 embedded-graphics-core = "0.4.1"
 static_cell = "2.1.1"
+embedded-alloc = "0.7.0"
 
 [profile.release]
 debug = true

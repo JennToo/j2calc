@@ -2,7 +2,7 @@
 #![no_main]
 
 use core::fmt::Write;
-use defmt::info;
+use defmt::{error, info};
 use defmt_rtt as _;
 use embassy_embedded_hal::shared_bus::asynch::spi::SpiDevice;
 use embassy_executor::Spawner;
@@ -21,6 +21,9 @@ use static_cell::StaticCell;
 
 mod keypad;
 mod lcd;
+
+#[global_allocator]
+static HEAP: embedded_alloc::LlffHeap = embedded_alloc::LlffHeap::empty();
 
 const VCOM_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -52,6 +55,24 @@ bind_interrupts!(struct Irqs {
 )]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
+
+    let psram_config = embassy_rp::psram::Config::aps6404l();
+    let psram = embassy_rp::psram::Psram::new(
+        embassy_rp::qmi_cs1::QmiCs1::new(p.QMI_CS1, p.PIN_8),
+        psram_config,
+    );
+
+    let Ok(psram) = psram else {
+        error!("PSRAM not found");
+        loop {
+            Timer::after_secs(1).await;
+        }
+    };
+    {
+        let psram_ptr = psram.base_address();
+        unsafe { HEAP.init(psram_ptr as usize, psram.size()) }
+    }
+
     let mut led = Output::new(p.PIN_7, Level::Low);
 
     let mut lcd_spi_config = Config::default();
