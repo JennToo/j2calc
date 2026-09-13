@@ -833,10 +833,15 @@ dependencies = [
  "embedded-hal-async",
  "embedded-hal-bus",
  "embedded-io-async 0.7.0",
+ "j2calc-core",
  "panic-probe",
  "portable-atomic",
  "static_cell",
 ]
+
+[[package]]
+name = "j2calc-core"
+version = "0.1.0"
 
 [[package]]
 name = "keccak"
