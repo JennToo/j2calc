@@ -33,6 +33,18 @@ type FramebufferMutex = Mutex<NoopRawMutex, lcd::BinaryFramebuffer>;
 static FB_MEMORY: StaticCell<FramebufferMutex> = StaticCell::new();
 static REDRAW_MEMORY: StaticCell<Signal<NoopRawMutex, ()>> = StaticCell::new();
 
+type KeypadSpiBus = Mutex<NoopRawMutex, Spi<'static, peripherals::SPI1, embassy_rp::spi::Async>>;
+type KeypadSpiDevice = SpiDevice<
+    'static,
+    NoopRawMutex,
+    Spi<'static, peripherals::SPI1, embassy_rp::spi::Async>,
+    Output<'static>,
+>;
+static KEYPAD_SPI_MEMORY: StaticCell<KeypadSpiBus> = StaticCell::new();
+type Keypad = keypad::KeypadIo<KeypadSpiDevice, Input<'static>>;
+static KEYPAD_MEMORY: StaticCell<Keypad> = StaticCell::new();
+static KEYPAD_UPDATE_MEMORY: StaticCell<Signal<NoopRawMutex, u64>> = StaticCell::new();
+
 // Program metadata for `picotool info`.
 #[unsafe(link_section = ".bi_entries")]
 #[used]
@@ -88,7 +100,7 @@ async fn main(spawner: Spawner) {
     keypad_spi_config.frequency = 1_000_000; // Can go as high as 10 MHz
     keypad_spi_config.phase = Phase::CaptureOnSecondTransition;
     keypad_spi_config.polarity = Polarity::IdleLow;
-    let keypad_spi_bus: Mutex<NoopRawMutex, _> = Mutex::new(Spi::new(
+    let keypad_spi_bus = KEYPAD_SPI_MEMORY.init(Mutex::new(Spi::new(
         p.SPI1,
         p.PIN_10,
         p.PIN_11,
@@ -97,13 +109,16 @@ async fn main(spawner: Spawner) {
         p.DMA_CH2,
         Irqs,
         keypad_spi_config,
+    )));
+    let keypad_spi_device = SpiDevice::new(keypad_spi_bus, Output::new(p.PIN_5, Level::High));
+    let keypad = KEYPAD_MEMORY.init(keypad::KeypadIo::new(
+        keypad_spi_device,
+        Input::new(p.PIN_6, Pull::Down),
     ));
-    let keypad_spi_device = SpiDevice::new(&keypad_spi_bus, Output::new(p.PIN_5, Level::High));
-    let mut keypad = keypad::KeypadIo::new(keypad_spi_device, Input::new(p.PIN_6, Pull::Down));
-
-    let mut text_fb = lcd::TextFramebuffer::new();
+    let button_update = KEYPAD_UPDATE_MEMORY.init(Signal::new());
 
     spawner.spawn(display_update(lcd, fb, redraw).unwrap());
+    spawner.spawn(keypad_watch(keypad, button_update).unwrap());
 
     {
         let mut fb = fb.lock().await;
@@ -111,28 +126,10 @@ async fn main(spawner: Spawner) {
     }
     redraw.signal(());
 
-    keypad.setup().await.unwrap();
+    let mut text_fb = lcd::TextFramebuffer::new();
+
     loop {
-        Timer::after_millis(10).await; // Debounce
-        let val = keypad.poll_all().await.unwrap();
-        info!("Button Mask {:049b}", val);
-        Timer::after(Duration::from_millis(1)).await;
-
-        text_fb.clear();
-        write!(text_fb, "Buttons {:049b}", val).unwrap();
-        {
-            let mut fb = fb.lock().await;
-            fb.clear(BinaryColor::Off).unwrap();
-            text_fb.draw(&mut *fb);
-        }
-        redraw.signal(());
-
-        if val == 0 {
-            led.set_low();
-            keypad.wait_for_int().await.unwrap();
-        } else {
-            led.set_high();
-        }
+        Timer::after_secs(10).await; // TODO: How to sleep this thread forever?
     }
 }
 
@@ -156,6 +153,24 @@ async fn display_update(
             Either::Second(_) => {
                 display.update_vcom().await.unwrap();
             }
+        }
+    }
+}
+
+#[embassy_executor::task]
+async fn keypad_watch(
+    keypad: &'static mut Keypad,
+    button_update: &'static Signal<NoopRawMutex, u64>,
+) {
+    keypad.setup().await.unwrap();
+    loop {
+        Timer::after_millis(10).await; // Debounce
+        let val = keypad.poll_all().await.unwrap();
+        button_update.signal(val);
+        Timer::after(Duration::from_millis(1)).await;
+
+        if val == 0 {
+            keypad.wait_for_int().await.unwrap();
         }
     }
 }
